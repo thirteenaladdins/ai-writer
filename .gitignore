@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+*.egg-info/
+dist/
+build/
+
+# Databases
+*.sqlite3
+*.db
+*.sql
+*.sqlite
+
+# Frontend
+node_modules/
+.output/
+.vercel/
+.netlify/
+.wrangler/
+.svelte-kit/
+build/
+dist/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+!.env.test
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db 

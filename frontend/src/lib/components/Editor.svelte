@@ -7,6 +7,19 @@
 	let editor: HTMLDivElement;
 	let wordCount = 0;
 	let charCount = 0;
+	let lastSavedContent = ''; // Track last saved content for change detection
+	let lastSaveTime = new Date().toISOString(); // Track when content was last saved
+
+	// Save status indicators
+	let saveStatus: 'saved' | 'saving' | 'error' | 'offline' = 'saved';
+	let lastServerSync: Date | null = null;
+	let isOffline = false; // Initialize without navigator check
+	let hasUnsavedChanges = false;
+
+	// Local storage keys
+	const LOCAL_STORAGE_KEY = `document_${documentId}`;
+	const LOCAL_STORAGE_VERSION_KEY = `document_${documentId}_version`;
+	const LOCAL_STORAGE_SETTINGS_KEY = `document_${documentId}_settings`;
 
 	const fonts = ['Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana'];
 
@@ -15,13 +28,52 @@
 	let selectedFont = 'Arial';
 	let selectedSize = '11pt';
 
+	interface DocumentSettings {
+		font: string;
+		fontSize: string;
+		lastModified: string;
+	}
+
 	function updateCounts() {
-		const text = editor?.textContent || '';
+		// Use a temporary div to get plain text for counting
+		const tempDiv = document.createElement('div');
+		tempDiv.innerHTML = editor?.innerHTML || '';
+		const text = tempDiv.textContent || '';
 		wordCount = text
 			.trim()
 			.split(/\s+/)
 			.filter((word) => word.length > 0).length;
 		charCount = text.length;
+	}
+
+	function saveSettings() {
+		if (typeof window === 'undefined') return;
+
+		const settings: DocumentSettings = {
+			font: selectedFont,
+			fontSize: selectedSize,
+			lastModified: new Date().toISOString()
+		};
+		localStorage.setItem(LOCAL_STORAGE_SETTINGS_KEY, JSON.stringify(settings));
+	}
+
+	function loadSettings() {
+		if (typeof window === 'undefined') return;
+
+		try {
+			const settings = localStorage.getItem(LOCAL_STORAGE_SETTINGS_KEY);
+			if (settings) {
+				const parsed = JSON.parse(settings) as DocumentSettings;
+				selectedFont = parsed.font;
+				selectedSize = parsed.fontSize;
+				if (editor) {
+					editor.style.fontFamily = selectedFont;
+					editor.style.fontSize = selectedSize;
+				}
+			}
+		} catch (error) {
+			console.error('Error loading settings:', error);
+		}
 	}
 
 	function handleFontChange(event: Event) {
@@ -30,6 +82,7 @@
 		if (editor) {
 			editor.style.fontFamily = selectedFont;
 		}
+		saveSettings();
 	}
 
 	function handleSizeChange(event: Event) {
@@ -38,43 +91,102 @@
 		if (editor) {
 			editor.style.fontSize = selectedSize;
 		}
+		saveSettings();
 	}
 
-	async function saveContent() {
+	// Monitor online status
+	function updateOnlineStatus() {
+		if (typeof window !== 'undefined') {
+			isOffline = !navigator.onLine;
+			saveStatus = isOffline ? 'offline' : hasUnsavedChanges ? 'saving' : 'saved';
+		}
+	}
+
+	onMount(() => {
+		// Initialize online status
+		updateOnlineStatus();
+
+		// Add event listeners
+		window.addEventListener('online', updateOnlineStatus);
+		window.addEventListener('offline', updateOnlineStatus);
+
+		// Load initial content
+		loadContent();
+
+		return () => {
+			window.removeEventListener('online', updateOnlineStatus);
+			window.removeEventListener('offline', updateOnlineStatus);
+		};
+	});
+
+	// Save to local storage
+	function saveToLocalStorage() {
+		if (typeof window === 'undefined') return;
+
 		try {
-			const response = await fetch('http://localhost:8000/documents', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					id: documentId,
-					title: 'My Story',
-					content: content,
-					created_at: new Date().toISOString(),
-					updated_at: new Date().toISOString()
-				})
-			});
-			if (!response.ok) {
-				throw new Error('Failed to save document');
-			}
+			const timestamp = new Date().toISOString();
+			localStorage.setItem(LOCAL_STORAGE_KEY, editor?.innerHTML || '');
+			localStorage.setItem(LOCAL_STORAGE_VERSION_KEY, timestamp);
+			lastSavedContent = editor?.innerHTML || '';
+			lastSaveTime = timestamp;
+			hasUnsavedChanges = true;
 		} catch (error) {
-			console.error('Error saving document:', error);
+			console.error('Error saving to local storage:', error);
+			saveStatus = 'error';
+		}
+	}
+
+	// Load from local storage
+	function loadFromLocalStorage(): { content: string; timestamp: string } | null {
+		if (typeof window === 'undefined') return null;
+
+		try {
+			const content = localStorage.getItem(LOCAL_STORAGE_KEY);
+			const timestamp = localStorage.getItem(LOCAL_STORAGE_VERSION_KEY) || new Date().toISOString();
+			if (content !== null) {
+				return { content, timestamp };
+			}
+			return null;
+		} catch (error) {
+			console.error('Error loading from local storage:', error);
+			return null;
 		}
 	}
 
 	async function loadContent() {
 		try {
-			const response = await fetch(`http://localhost:8000/documents/${documentId}`);
-			if (response.ok) {
-				const document = await response.json();
-				content = document.content;
+			// First try to load from local storage
+			const localData = loadFromLocalStorage();
+			let shouldUseLocalContent = false;
+
+			if (localData) {
+				shouldUseLocalContent = true;
 				if (editor) {
-					editor.textContent = content;
+					editor.innerHTML = localData.content;
 					updateCounts();
 				}
 			}
+
+			// Then try to load from server
+			const response = await fetch(`http://localhost:8000/documents/${documentId}`);
+			if (response.ok) {
+				const document = await response.json();
+				// Only use server content if it's newer than local content
+				if (
+					!shouldUseLocalContent ||
+					new Date(document.updated_at) > new Date(localData?.timestamp || 0)
+				) {
+					if (editor) {
+						editor.innerHTML = document.content;
+						updateCounts();
+						saveToLocalStorage(); // Sync local storage with server version
+					}
+				}
+			}
 			isLoading = false;
+
+			// Load settings after content
+			loadSettings();
 		} catch (error) {
 			console.error('Error loading document:', error);
 			isLoading = false;
@@ -82,21 +194,87 @@
 	}
 
 	function handleInput(event: Event) {
-		const target = event.target as HTMLDivElement;
-		content = target.textContent || '';
-		if (!content.trim()) {
-			target.textContent = '';
-		}
 		updateCounts();
+
+		// Save immediately to local storage
+		saveToLocalStorage();
+
+		// Debounced save to server
 		clearTimeout(saveTimeout);
 		saveTimeout = setTimeout(saveContent, 1000);
 	}
 
 	let saveTimeout: ReturnType<typeof setTimeout>;
 
-	onMount(() => {
-		loadContent();
-	});
+	async function saveContent() {
+		if (isOffline) {
+			saveStatus = 'offline';
+			return;
+		}
+
+		saveStatus = 'saving';
+
+		try {
+			// Check if document exists first
+			const checkResponse = await fetch(`http://localhost:8000/documents/${documentId}`);
+			const method = checkResponse.ok ? 'PUT' : 'POST';
+			const url = checkResponse.ok
+				? `http://localhost:8000/documents/${documentId}`
+				: 'http://localhost:8000/documents';
+
+			const response = await fetch(url, {
+				method,
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					id: documentId,
+					title: 'My Story',
+					content: editor?.innerHTML || '',
+					created_at: new Date().toISOString(),
+					updated_at: new Date().toISOString()
+				})
+			});
+
+			if (!response.ok) {
+				throw new Error(`Failed to ${method.toLowerCase()} document`);
+			}
+
+			lastServerSync = new Date();
+			saveStatus = 'saved';
+			hasUnsavedChanges = false;
+		} catch (error) {
+			console.error('Error saving document to server:', error);
+			saveStatus = 'error';
+		}
+	}
+
+	function getSaveStatusText(): string {
+		switch (saveStatus) {
+			case 'saved':
+				return lastServerSync
+					? `All changes saved • Last synced ${formatTimeAgo(lastServerSync)}`
+					: 'All changes saved locally';
+			case 'saving':
+				return 'Saving changes...';
+			case 'error':
+				return 'Error saving changes';
+			case 'offline':
+				return 'Working offline • Changes saved locally';
+			default:
+				return '';
+		}
+	}
+
+	function formatTimeAgo(date: Date): string {
+		const now = new Date();
+		const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+		if (diffInSeconds < 60) return 'just now';
+		if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+		if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+		return `${Math.floor(diffInSeconds / 86400)}d ago`;
+	}
 </script>
 
 <div class="editor-wrapper">
@@ -112,6 +290,9 @@
 					<option value={size}>{size}</option>
 				{/each}
 			</select>
+			<div class="save-status {saveStatus}">
+				{getSaveStatusText()}
+			</div>
 			<div class="counts">
 				<span>{wordCount} words</span>
 				<span>{charCount} characters</span>
@@ -166,13 +347,36 @@
 		max-width: 120px;
 	}
 
-	.counts {
+	.save-status {
 		margin-left: auto;
 		font-size: 10pt;
 		color: #666;
 		display: flex;
-		gap: 0.75rem;
-		white-space: nowrap;
+		align-items: center;
+		padding: 0 1rem;
+	}
+
+	.save-status.saving {
+		color: #ffd700;
+	}
+
+	.save-status.saved {
+		color: #4caf50;
+	}
+
+	.save-status.error {
+		color: #f44336;
+	}
+
+	.save-status.offline {
+		color: #ff9800;
+	}
+
+	.counts {
+		margin-left: 1rem;
+		border-left: 1px solid var(--border-color);
+		padding-left: 1rem;
+		color: #666;
 	}
 
 	.editor-content {
