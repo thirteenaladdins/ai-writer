@@ -11,10 +11,11 @@
 	let lastSaveTime = new Date().toISOString(); // Track when content was last saved
 
 	// Save status indicators
-	let saveStatus: 'saved' | 'saving' | 'error' | 'offline' = 'saved';
+	let saveStatus: 'saved' | 'saving' | 'error' | 'offline' | 'hidden' = 'saved';
 	let lastServerSync: Date | null = null;
 	let isOffline = false; // Initialize without navigator check
 	let hasUnsavedChanges = false;
+	let statusHideTimeout: ReturnType<typeof setTimeout>;
 
 	// Local storage keys
 	const LOCAL_STORAGE_KEY = `document_${documentId}`;
@@ -206,13 +207,29 @@
 
 	let saveTimeout: ReturnType<typeof setTimeout>;
 
+	function setSaveStatus(status: typeof saveStatus) {
+		saveStatus = status;
+
+		// Clear any existing timeout
+		if (statusHideTimeout) {
+			clearTimeout(statusHideTimeout);
+		}
+
+		// Set timeout to hide the message after a few seconds
+		if (status === 'saved' || status === 'error') {
+			statusHideTimeout = setTimeout(() => {
+				saveStatus = 'hidden';
+			}, 2000); // Hide after 2 seconds
+		}
+	}
+
 	async function saveContent() {
 		if (isOffline) {
-			saveStatus = 'offline';
+			setSaveStatus('offline');
 			return;
 		}
 
-		saveStatus = 'saving';
+		setSaveStatus('saving');
 
 		try {
 			// Check if document exists first
@@ -241,11 +258,11 @@
 			}
 
 			lastServerSync = new Date();
-			saveStatus = 'saved';
+			setSaveStatus('saved');
 			hasUnsavedChanges = false;
 		} catch (error) {
 			console.error('Error saving document to server:', error);
-			saveStatus = 'error';
+			setSaveStatus('error');
 		}
 	}
 
@@ -261,6 +278,8 @@
 				return 'Error saving changes';
 			case 'offline':
 				return 'Working offline • Changes saved locally';
+			case 'hidden':
+				return '';
 			default:
 				return '';
 		}
@@ -290,7 +309,7 @@
 					<option value={size}>{size}</option>
 				{/each}
 			</select>
-			<div class="save-status {saveStatus}">
+			<div class="save-status {saveStatus}" class:hidden={saveStatus === 'hidden'}>
 				{getSaveStatusText()}
 			</div>
 			<div class="counts">
@@ -314,26 +333,35 @@
 	.editor-wrapper {
 		height: 100%;
 		width: 100%;
-		overflow-y: auto;
-		overflow-x: hidden;
+		overflow: hidden;
 		display: flex;
-		justify-content: center;
+		flex-direction: column;
+		padding: 0;
+		margin: 0;
 	}
 
 	.editor-container {
-		width: 95%;
-		max-width: 800px;
+		width: 100%;
 		height: 100%;
 		display: flex;
 		flex-direction: column;
+		padding: 0;
+		margin: 0;
+		overflow: hidden;
 	}
 
 	.toolbar {
-		padding: 0.25rem 0.5rem;
+		padding: 0.5rem 2rem;
 		display: flex;
 		align-items: center;
 		background-color: var(--panel-background);
-		height: 24px;
+		border-bottom: 1px solid var(--border-color);
+		height: 32px;
+		width: 100%;
+		box-sizing: border-box;
+		margin: 0;
+		flex-shrink: 0;
+		position: relative;
 	}
 
 	.toolbar select {
@@ -345,15 +373,24 @@
 		font-size: 10pt;
 		height: 24px;
 		max-width: 120px;
+		margin-right: 0.5rem;
 	}
 
 	.save-status {
-		margin-left: auto;
+		position: absolute;
+		left: 50%;
+		transform: translateX(-50%);
 		font-size: 10pt;
 		color: #666;
 		display: flex;
 		align-items: center;
 		padding: 0 1rem;
+		transition: opacity 0.3s ease;
+		pointer-events: none;
+	}
+
+	.save-status.hidden {
+		opacity: 0;
 	}
 
 	.save-status.saving {
@@ -373,23 +410,39 @@
 	}
 
 	.counts {
-		margin-left: 1rem;
+		margin-left: auto;
 		border-left: 1px solid var(--border-color);
 		padding-left: 1rem;
+		padding-right: 0;
 		color: #666;
+		font-size: 10pt;
+		white-space: nowrap;
+		z-index: 1;
+	}
+
+	.counts span {
+		margin-right: 1rem;
+	}
+
+	.counts span:last-child {
+		margin-right: 0;
 	}
 
 	.editor-content {
 		flex: 1;
 		width: 100%;
-		padding: 0.5rem;
+		max-width: 800px;
+		margin: 4rem auto 2rem auto;
+		padding: 0 2rem;
 		outline: none;
 		white-space: pre-wrap;
 		word-wrap: break-word;
 		font-family: Arial, sans-serif;
 		font-size: 11pt;
-		line-height: inherit;
+		line-height: 1.6;
 		box-sizing: border-box;
+		overflow-y: auto;
+		overflow-x: hidden;
 	}
 
 	/* Placeholder style using the :empty pseudo-element */
@@ -399,5 +452,20 @@
 		opacity: 0.7;
 		pointer-events: none;
 		user-select: none;
+	}
+
+	/* Custom scrollbar styles */
+	.editor-content::-webkit-scrollbar {
+		width: 8px;
+		background: transparent;
+	}
+
+	.editor-content::-webkit-scrollbar-thumb {
+		background: var(--border-color);
+		border-radius: 4px;
+	}
+
+	.editor-content::-webkit-scrollbar-thumb:hover {
+		background: #555;
 	}
 </style>

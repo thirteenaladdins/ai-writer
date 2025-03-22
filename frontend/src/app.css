@@ -49,8 +49,6 @@ body {
 }
 
 .panels-container {
-    display: grid;
-    grid-template-columns: 250px 1fr 300px;
     flex: 1;
     overflow: hidden;
 }
@@ -58,17 +56,12 @@ body {
 /* Panels */
 .panel {
     background-color: var(--panel-background);
-    border-right: 1px solid var(--border-color);
     padding: 1rem;
-    overflow-y: auto;
-}
-
-.panel:last-child {
-    border-right: none;
+    overflow: hidden;
 }
 
 /* Center Panel */
-.panel:nth-child(2) {
+.main-panel {
     background-color: var(--editor-background);
     padding: 1rem;
 }
