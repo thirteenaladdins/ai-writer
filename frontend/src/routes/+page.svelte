@@ -1,8 +1,48 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import Editor from '$lib/components/Editor.svelte';
+	import { documents } from '$lib/stores/documents';
 
 	let leftPanelVisible = true;
 	let rightPanelVisible = true;
+	let storyId: string | null = null;
+	let isLoading = true;
+
+	onMount(() => {
+		// Check if we have the legacy document format
+		const legacyContent = localStorage.getItem('document_content');
+
+		if (legacyContent) {
+			console.log('Legacy document format detected');
+			// If we're at root with no ID, use default-document
+			if (!storyId) {
+				console.log('Setting default-document as current story');
+				storyId = 'default-document';
+				// Update URL without causing navigation
+				const url = new URL(window.location.href);
+				url.searchParams.set('id', storyId);
+				window.history.replaceState({}, '', url.toString());
+			}
+		}
+
+		documents.loadFromStorage();
+		isLoading = false;
+	});
+
+	$: {
+		// Get story ID from URL
+		const urlParams = new URLSearchParams($page.url.search);
+		const idFromUrl = urlParams.get('id');
+
+		if (idFromUrl) {
+			storyId = idFromUrl;
+		} else if (!isLoading) {
+			// Only redirect if we're not in loading state
+			goto('/home');
+		}
+	}
 
 	function toggleLeftPanel() {
 		leftPanelVisible = !leftPanelVisible;
@@ -39,7 +79,11 @@
 	</aside>
 
 	<main class="panel main-panel">
-		<Editor />
+		{#if storyId}
+			<Editor {storyId} />
+		{:else}
+			<div class="loading">Loading...</div>
+		{/if}
 	</main>
 
 	<aside class="panel right-panel" class:collapsed={!rightPanelVisible}>
@@ -187,5 +231,14 @@
 		opacity: 0;
 		pointer-events: none;
 		padding: 0;
+	}
+
+	.loading {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		height: 100%;
+		color: var(--text-muted);
+		font-size: 1.2rem;
 	}
 </style>

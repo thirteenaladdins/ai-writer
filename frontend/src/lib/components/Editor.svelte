@@ -1,8 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { documents } from '$lib/stores/documents';
+	import { documentTitle } from '$lib/stores/document';
+	import { goto } from '$app/navigation';
+	import { get } from 'svelte/store';
+
+	export let storyId: string;
 
 	let content = '';
-	let documentId = 'default-document';
 	let isLoading = true;
 	let editor: HTMLDivElement;
 	let wordCount = 0;
@@ -17,17 +22,18 @@
 	let hasUnsavedChanges = false;
 	let statusHideTimeout: ReturnType<typeof setTimeout>;
 
-	// Local storage keys
-	const LOCAL_STORAGE_KEY = `document_${documentId}`;
-	const LOCAL_STORAGE_VERSION_KEY = `document_${documentId}_version`;
-	const LOCAL_STORAGE_SETTINGS_KEY = `document_${documentId}_settings`;
-
 	const fonts = ['Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana'];
-
 	const fontSizes = ['9pt', '10pt', '11pt', '12pt', '14pt', '16pt'];
 
 	let selectedFont = 'Arial';
 	let selectedSize = '11pt';
+
+	// Subscribe to document changes to keep title in sync
+	let unsubscribe: () => void;
+
+	function navigateToHome() {
+		goto('/home');
+	}
 
 	interface DocumentSettings {
 		font: string;
@@ -55,14 +61,14 @@
 			fontSize: selectedSize,
 			lastModified: new Date().toISOString()
 		};
-		localStorage.setItem(LOCAL_STORAGE_SETTINGS_KEY, JSON.stringify(settings));
+		localStorage.setItem(`document_settings_${storyId}`, JSON.stringify(settings));
 	}
 
 	function loadSettings() {
 		if (typeof window === 'undefined') return;
 
 		try {
-			const settings = localStorage.getItem(LOCAL_STORAGE_SETTINGS_KEY);
+			const settings = localStorage.getItem(`document_settings_${storyId}`);
 			if (settings) {
 				const parsed = JSON.parse(settings) as DocumentSettings;
 				selectedFont = parsed.font;
@@ -95,6 +101,11 @@
 		saveSettings();
 	}
 
+	function handleTitleChange() {
+		hasUnsavedChanges = true;
+		saveToLocalStorage();
+	}
+
 	// Monitor online status
 	function updateOnlineStatus() {
 		if (typeof window !== 'undefined') {
@@ -110,6 +121,14 @@
 		// Add event listeners
 		window.addEventListener('online', updateOnlineStatus);
 		window.addEventListener('offline', updateOnlineStatus);
+		window.addEventListener('document:title-change', handleTitleChange);
+
+		// Subscribe to documents store to keep title in sync
+		unsubscribe = documents.subscribe((docs) => {
+			if (docs[storyId]) {
+				documentTitle.set(docs[storyId].title);
+			}
+		});
 
 		// Load initial content
 		loadContent();
@@ -117,76 +136,105 @@
 		return () => {
 			window.removeEventListener('online', updateOnlineStatus);
 			window.removeEventListener('offline', updateOnlineStatus);
+			window.removeEventListener('document:title-change', handleTitleChange);
+			if (unsubscribe) unsubscribe();
 		};
 	});
 
-	// Save to local storage
+	// Save to local storage and documents store
 	function saveToLocalStorage() {
 		if (typeof window === 'undefined') return;
 
 		try {
 			const timestamp = new Date().toISOString();
-			localStorage.setItem(LOCAL_STORAGE_KEY, editor?.innerHTML || '');
-			localStorage.setItem(LOCAL_STORAGE_VERSION_KEY, timestamp);
-			lastSavedContent = editor?.innerHTML || '';
+			const content = editor?.innerHTML || '';
+			const title = $documentTitle;
+
+			// Save to documents store
+			documents.update((docs) => {
+				const updatedDocs = { ...docs };
+				updatedDocs[storyId] = {
+					id: storyId,
+					title,
+					content,
+					updatedAt: new Date(timestamp)
+				};
+				return updatedDocs;
+			});
+
+			// Save to localStorage
+			localStorage.setItem(
+				`document_${storyId}`,
+				JSON.stringify({
+					title,
+					content,
+					updatedAt: timestamp
+				})
+			);
+
+			lastSavedContent = content;
 			lastSaveTime = timestamp;
-			hasUnsavedChanges = true;
+			hasUnsavedChanges = false;
+			setSaveStatus('saved');
 		} catch (error) {
-			console.error('Error saving to local storage:', error);
-			saveStatus = 'error';
+			console.error('Error saving to storage:', error);
+			setSaveStatus('error');
 		}
 	}
 
-	// Load from local storage
-	function loadFromLocalStorage(): { content: string; timestamp: string } | null {
-		if (typeof window === 'undefined') return null;
-
+	// Load content from documents store and localStorage
+	function loadContent() {
 		try {
-			const content = localStorage.getItem(LOCAL_STORAGE_KEY);
-			const timestamp = localStorage.getItem(LOCAL_STORAGE_VERSION_KEY) || new Date().toISOString();
-			if (content !== null) {
-				return { content, timestamp };
-			}
-			return null;
-		} catch (error) {
-			console.error('Error loading from local storage:', error);
-			return null;
-		}
-	}
+			// Special handling for default-document (legacy format)
+			if (storyId === 'default-document') {
+				const legacyContent = localStorage.getItem('document_content');
+				const legacyTitle = localStorage.getItem('document_title');
 
-	async function loadContent() {
-		try {
-			// First try to load from local storage
-			const localData = loadFromLocalStorage();
-			let shouldUseLocalContent = false;
+				if (legacyContent) {
+					if (editor) {
+						editor.innerHTML = legacyContent;
+						documentTitle.set(legacyTitle || 'Untitled Document');
+						updateCounts();
 
-			if (localData) {
-				shouldUseLocalContent = true;
-				if (editor) {
-					editor.innerHTML = localData.content;
-					updateCounts();
+						// Save in new format
+						saveToLocalStorage();
+					}
+					isLoading = false;
+					loadSettings();
+					return;
 				}
 			}
 
-			// Then try to load from server
-			const response = await fetch(`http://localhost:8000/documents/${documentId}`);
-			if (response.ok) {
-				const document = await response.json();
-				// Only use server content if it's newer than local content
-				if (
-					!shouldUseLocalContent ||
-					new Date(document.updated_at) > new Date(localData?.timestamp || 0)
-				) {
+			// First try to get from documents store
+			const docsData = get(documents);
+			if (docsData[storyId]) {
+				if (editor) {
+					editor.innerHTML = docsData[storyId].content;
+					documentTitle.set(docsData[storyId].title);
+					updateCounts();
+				}
+			} else {
+				// Try localStorage as fallback
+				const doc = JSON.parse(localStorage.getItem(`document_${storyId}`) || '{}');
+
+				if (doc.content) {
 					if (editor) {
-						editor.innerHTML = document.content;
+						editor.innerHTML = doc.content;
+						documentTitle.set(doc.title || 'Untitled Document');
 						updateCounts();
-						saveToLocalStorage(); // Sync local storage with server version
+					}
+				} else {
+					// Initialize new document
+					if (editor) {
+						editor.innerHTML = '';
+						documentTitle.set('Untitled Document');
+						updateCounts();
+						saveToLocalStorage(); // Save the initial state
 					}
 				}
 			}
-			isLoading = false;
 
-			// Load settings after content
+			isLoading = false;
 			loadSettings();
 		} catch (error) {
 			console.error('Error loading document:', error);
@@ -194,18 +242,13 @@
 		}
 	}
 
-	function handleInput(event: Event) {
+	function handleInput() {
 		updateCounts();
+		hasUnsavedChanges = true;
 
-		// Save immediately to local storage
+		// Save immediately to storage
 		saveToLocalStorage();
-
-		// Debounced save to server
-		clearTimeout(saveTimeout);
-		saveTimeout = setTimeout(saveContent, 1000);
 	}
-
-	let saveTimeout: ReturnType<typeof setTimeout>;
 
 	function setSaveStatus(status: typeof saveStatus) {
 		saveStatus = status;
@@ -219,86 +262,19 @@
 		if (status === 'saved' || status === 'error') {
 			statusHideTimeout = setTimeout(() => {
 				saveStatus = 'hidden';
-			}, 2000); // Hide after 2 seconds
-		}
-	}
-
-	async function saveContent() {
-		if (isOffline) {
-			setSaveStatus('offline');
-			return;
+			}, 2000);
 		}
 
-		setSaveStatus('saving');
-
-		try {
-			// Check if document exists first
-			const checkResponse = await fetch(`http://localhost:8000/documents/${documentId}`);
-			const method = checkResponse.ok ? 'PUT' : 'POST';
-			const url = checkResponse.ok
-				? `http://localhost:8000/documents/${documentId}`
-				: 'http://localhost:8000/documents';
-
-			const response = await fetch(url, {
-				method,
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					id: documentId,
-					title: 'My Story',
-					content: editor?.innerHTML || '',
-					created_at: new Date().toISOString(),
-					updated_at: new Date().toISOString()
-				})
-			});
-
-			if (!response.ok) {
-				throw new Error(`Failed to ${method.toLowerCase()} document`);
-			}
-
-			lastServerSync = new Date();
-			setSaveStatus('saved');
-			hasUnsavedChanges = false;
-		} catch (error) {
-			console.error('Error saving document to server:', error);
-			setSaveStatus('error');
+		// Dispatch custom event to notify layout of status change
+		if (typeof window !== 'undefined') {
+			window.dispatchEvent(new CustomEvent('document:save-status', { detail: status }));
 		}
-	}
-
-	function getSaveStatusText(): string {
-		switch (saveStatus) {
-			case 'saved':
-				return lastServerSync
-					? `All changes saved • Last synced ${formatTimeAgo(lastServerSync)}`
-					: 'All changes saved locally';
-			case 'saving':
-				return 'Saving changes...';
-			case 'error':
-				return 'Error saving changes';
-			case 'offline':
-				return 'Working offline • Changes saved locally';
-			case 'hidden':
-				return '';
-			default:
-				return '';
-		}
-	}
-
-	function formatTimeAgo(date: Date): string {
-		const now = new Date();
-		const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-		if (diffInSeconds < 60) return 'just now';
-		if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
-		if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
-		return `${Math.floor(diffInSeconds / 86400)}d ago`;
 	}
 </script>
 
-<div class="editor-wrapper">
-	<div class="editor-container">
-		<div class="toolbar">
+<div class="editor-container">
+	<div class="toolbar">
+		<div class="formatting-tools">
 			<select value={selectedFont} on:change={handleFontChange}>
 				{#each fonts as font}
 					<option value={font}>{font}</option>
@@ -309,163 +285,126 @@
 					<option value={size}>{size}</option>
 				{/each}
 			</select>
-			<div class="save-status {saveStatus}" class:hidden={saveStatus === 'hidden'}>
-				{getSaveStatusText()}
-			</div>
-			<div class="counts">
-				<span>{wordCount} words</span>
-				<span>{charCount} characters</span>
-			</div>
 		</div>
-		<div
-			bind:this={editor}
-			class="editor-content"
-			contenteditable="true"
-			on:input={handleInput}
-			spellcheck="true"
-		>
-			<!-- No binding of {content} here -->
+
+		<div class="toolbar-center">
+			{#if saveStatus !== 'hidden'}
+				<div class="save-status-container">
+					<span class="save-status" class:error={saveStatus === 'error'}>
+						{#if saveStatus === 'saved'}
+							Saved
+						{:else if saveStatus === 'saving'}
+							Saving...
+						{:else if saveStatus === 'error'}
+							Error saving
+						{:else if saveStatus === 'offline'}
+							Offline - changes saved locally
+						{/if}
+					</span>
+				</div>
+			{/if}
+		</div>
+
+		<div class="status-bar">
+			<span class="word-count">{wordCount} words</span>
+			<span class="char-count">{charCount} characters</span>
 		</div>
 	</div>
+
+	<div
+		class="editor"
+		bind:this={editor}
+		contenteditable="true"
+		on:input={handleInput}
+		style="font-family: {selectedFont}; font-size: {selectedSize};"
+	/>
 </div>
 
 <style>
-	.editor-wrapper {
-		height: 100%;
-		width: 100%;
-		overflow: hidden;
-		display: flex;
-		flex-direction: column;
-		padding: 0;
-		margin: 0;
-	}
-
 	.editor-container {
-		width: 100%;
-		height: 100%;
 		display: flex;
 		flex-direction: column;
-		padding: 0;
-		margin: 0;
-		overflow: hidden;
+		height: 100%;
+		background: var(--editor-background);
 	}
 
 	.toolbar {
-		padding: 0.5rem 2rem;
-		display: flex;
+		display: grid;
+		grid-template-columns: auto 1fr auto;
 		align-items: center;
-		background-color: var(--panel-background);
+		gap: 1rem;
+		padding: 0.5rem 1rem;
 		border-bottom: 1px solid var(--border-color);
-		height: 32px;
-		width: 100%;
-		box-sizing: border-box;
-		margin: 0;
-		flex-shrink: 0;
-		position: relative;
+		background: var(--toolbar-background);
 	}
 
-	.toolbar select {
-		padding: 0.15rem 0.25rem;
-		background-color: var(--background-color);
-		color: var(--text-color);
+	.toolbar-center {
+		display: flex;
+		justify-content: center;
+		align-items: center;
+	}
+
+	.formatting-tools {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.formatting-tools select {
+		padding: 0.3rem;
 		border: 1px solid var(--border-color);
-		border-radius: 3px;
-		font-size: 10pt;
-		height: 24px;
-		max-width: 120px;
-		margin-right: 0.5rem;
+		border-radius: 4px;
+		background: var(--input-background);
+		color: var(--text-color);
+	}
+
+	.save-status-container {
+		display: flex;
+		align-items: center;
+		justify-content: center;
 	}
 
 	.save-status {
-		position: absolute;
-		left: 50%;
-		transform: translateX(-50%);
-		font-size: 10pt;
-		color: #666;
-		display: flex;
-		align-items: center;
-		padding: 0 1rem;
-		transition: opacity 0.3s ease;
-		pointer-events: none;
-	}
-
-	.save-status.hidden {
-		opacity: 0;
-	}
-
-	.save-status.saving {
-		color: #ffd700;
-	}
-
-	.save-status.saved {
-		color: #4caf50;
+		font-size: 0.8rem;
+		padding: 0.2rem 0.5rem;
+		border-radius: 3px;
+		background: var(--success-background, rgba(0, 255, 0, 0.1));
+		color: var(--success-text, #6ece6e);
 	}
 
 	.save-status.error {
-		color: #f44336;
+		background: var(--error-background, rgba(255, 0, 0, 0.1));
+		color: var(--error-text, #ff6b6b);
 	}
 
-	.save-status.offline {
-		color: #ff9800;
+	.status-bar {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		font-size: 0.9rem;
+		color: var(--text-muted);
+		justify-self: end;
 	}
 
-	.counts {
-		margin-left: auto;
-		border-left: 1px solid var(--border-color);
-		padding-left: 1rem;
-		padding-right: 0;
-		color: #666;
-		font-size: 10pt;
-		white-space: nowrap;
-		z-index: 1;
-	}
-
-	.counts span {
-		margin-right: 1rem;
-	}
-
-	.counts span:last-child {
-		margin-right: 0;
-	}
-
-	.editor-content {
+	.editor {
 		flex: 1;
-		width: 100%;
-		max-width: 800px;
-		margin: 4rem auto 2rem auto;
-		padding: 0 2rem;
-		outline: none;
-		white-space: pre-wrap;
-		word-wrap: break-word;
-		font-family: Arial, sans-serif;
-		font-size: 11pt;
-		line-height: 1.6;
-		box-sizing: border-box;
+		padding: 2rem;
 		overflow-y: auto;
-		overflow-x: hidden;
+		line-height: 1.6;
+		color: var(--text-color);
 	}
 
-	/* Placeholder style using the :empty pseudo-element */
-	.editor-content:empty:before {
-		content: 'Start writing your story...';
-		color: #666;
-		opacity: 0.7;
-		pointer-events: none;
-		user-select: none;
+	.editor:focus {
+		outline: none;
 	}
 
-	/* Custom scrollbar styles */
-	.editor-content::-webkit-scrollbar {
-		width: 8px;
-		background: transparent;
+	/* Hide scrollbar for Chrome, Safari and Opera */
+	.editor::-webkit-scrollbar {
+		display: none;
 	}
 
-	.editor-content::-webkit-scrollbar-thumb {
-		background: var(--border-color);
-		border-radius: 4px;
-	}
-
-	.editor-content::-webkit-scrollbar-thumb:hover {
-		background: #555;
+	/* Hide scrollbar for IE, Edge and Firefox */
+	.editor {
+		-ms-overflow-style: none; /* IE and Edge */
+		scrollbar-width: none; /* Firefox */
 	}
 </style>
