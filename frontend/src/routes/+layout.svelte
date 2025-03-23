@@ -26,8 +26,29 @@
 	}
 
 	function handleKeyDown(event: KeyboardEvent) {
+		const input = event.target as HTMLInputElement;
+
+		// Handle Enter key
 		if (event.key === 'Enter') {
-			(event.target as HTMLInputElement).blur();
+			input.blur();
+			return;
+		}
+	}
+
+	// Handle blur event to set a default if empty
+	function handleBlur(event: FocusEvent) {
+		const input = event.target as HTMLInputElement;
+		// Only set to Untitled Document when blurring with empty value
+		if (!input.value) {
+			documentTitle.set('Untitled Document');
+		}
+	}
+
+	// Handle click to select all text
+	function handleClick(event: MouseEvent) {
+		const input = event.target as HTMLInputElement;
+		if (input.value === 'Untitled Document') {
+			input.select();
 		}
 	}
 </script>
@@ -43,6 +64,8 @@
 						bind:value={$documentTitle}
 						on:input={handleTitleChange}
 						on:keydown={handleKeyDown}
+						on:blur={handleBlur}
+						on:click={handleClick}
 						placeholder="Untitled Document"
 						class="document-title"
 					/>

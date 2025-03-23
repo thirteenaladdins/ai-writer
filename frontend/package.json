@@ -33,6 +33,7 @@
 		"vite": "^6.0.0"
 	},
 	"dependencies": {
+		"package.json": "^2.0.1",
 		"svelte-feather-icons": "^4.2.0"
 	}
 }

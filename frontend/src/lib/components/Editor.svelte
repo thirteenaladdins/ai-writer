@@ -7,45 +7,46 @@
 
 	export let storyId: string;
 
-	let content = '';
 	let isLoading = true;
 	let editor: HTMLDivElement;
 	let wordCount = 0;
 	let charCount = 0;
-	let lastSavedContent = ''; // Track last saved content for change detection
-	let lastSaveTime = new Date().toISOString(); // Track when content was last saved
+	let lastSaveTime = new Date().toISOString();
 
 	// Save status indicators
 	let saveStatus: 'saved' | 'saving' | 'error' | 'offline' | 'hidden' = 'saved';
-	let lastServerSync: Date | null = null;
-	let isOffline = false; // Initialize without navigator check
+	let isOffline = false;
 	let hasUnsavedChanges = false;
 	let statusHideTimeout: ReturnType<typeof setTimeout>;
 
+	// Font and formatting options
 	const fonts = ['Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana'];
 	const fontSizes = ['9pt', '10pt', '11pt', '12pt', '14pt', '16pt'];
-
 	let selectedFont = 'Arial';
 	let selectedSize = '11pt';
 
-	// Subscribe to document changes to keep title in sync
+	// Current chapter tracking
+	let currentChapterId: string | null = null;
+
+	// Subscribe to document changes for title sync
 	let unsubscribe: () => void;
 
-	function navigateToHome() {
-		goto('/home');
+	// Custom event interfaces
+	interface ChapterContentEvent extends CustomEvent {
+		detail: {
+			content: string;
+			chapterId: string;
+		};
 	}
 
-	interface DocumentSettings {
-		font: string;
-		fontSize: string;
-		lastModified: string;
-	}
-
+	// Update word and character counts
 	function updateCounts() {
-		// Use a temporary div to get plain text for counting
+		if (!editor) return;
+
 		const tempDiv = document.createElement('div');
-		tempDiv.innerHTML = editor?.innerHTML || '';
+		tempDiv.innerHTML = editor.innerHTML || '';
 		const text = tempDiv.textContent || '';
+
 		wordCount = text
 			.trim()
 			.split(/\s+/)
@@ -53,10 +54,11 @@
 		charCount = text.length;
 	}
 
+	// Save editor font and size settings
 	function saveSettings() {
 		if (typeof window === 'undefined') return;
 
-		const settings: DocumentSettings = {
+		const settings = {
 			font: selectedFont,
 			fontSize: selectedSize,
 			lastModified: new Date().toISOString()
@@ -64,13 +66,14 @@
 		localStorage.setItem(`document_settings_${storyId}`, JSON.stringify(settings));
 	}
 
+	// Load editor settings
 	function loadSettings() {
 		if (typeof window === 'undefined') return;
 
 		try {
 			const settings = localStorage.getItem(`document_settings_${storyId}`);
 			if (settings) {
-				const parsed = JSON.parse(settings) as DocumentSettings;
+				const parsed = JSON.parse(settings);
 				selectedFont = parsed.font;
 				selectedSize = parsed.fontSize;
 				if (editor) {
@@ -83,6 +86,7 @@
 		}
 	}
 
+	// Handle font change
 	function handleFontChange(event: Event) {
 		const select = event.target as HTMLSelectElement;
 		selectedFont = select.value;
@@ -92,6 +96,7 @@
 		saveSettings();
 	}
 
+	// Handle font size change
 	function handleSizeChange(event: Event) {
 		const select = event.target as HTMLSelectElement;
 		selectedSize = select.value;
@@ -101,12 +106,13 @@
 		saveSettings();
 	}
 
+	// Handle document title change
 	function handleTitleChange() {
 		hasUnsavedChanges = true;
-		saveToLocalStorage();
+		saveDocumentMetadata();
 	}
 
-	// Monitor online status
+	// Check online status
 	function updateOnlineStatus() {
 		if (typeof window !== 'undefined') {
 			isOffline = !navigator.onLine;
@@ -114,162 +120,127 @@
 		}
 	}
 
-	onMount(() => {
-		// Initialize online status
-		updateOnlineStatus();
-
-		// Add event listeners
-		window.addEventListener('online', updateOnlineStatus);
-		window.addEventListener('offline', updateOnlineStatus);
-		window.addEventListener('document:title-change', handleTitleChange);
-
-		// Subscribe to documents store to keep title in sync
-		unsubscribe = documents.subscribe((docs) => {
-			if (docs[storyId]) {
-				documentTitle.set(docs[storyId].title);
-			}
-		});
-
-		// Load initial content
-		loadContent();
-
-		return () => {
-			window.removeEventListener('online', updateOnlineStatus);
-			window.removeEventListener('offline', updateOnlineStatus);
-			window.removeEventListener('document:title-change', handleTitleChange);
-			if (unsubscribe) unsubscribe();
-		};
-	});
-
-	// Save to local storage and documents store
-	function saveToLocalStorage() {
+	// Save document metadata (title, etc.)
+	function saveDocumentMetadata() {
 		if (typeof window === 'undefined') return;
 
 		try {
 			const timestamp = new Date().toISOString();
-			const content = editor?.innerHTML || '';
 			const title = $documentTitle;
 
-			// Save to documents store
+			// Update document store with metadata (no content)
 			documents.update((docs) => {
 				const updatedDocs = { ...docs };
 				updatedDocs[storyId] = {
+					...(updatedDocs[storyId] || {}),
 					id: storyId,
 					title,
-					content,
 					updatedAt: new Date(timestamp)
 				};
 				return updatedDocs;
 			});
 
-			// Save to localStorage
-			localStorage.setItem(
-				`document_${storyId}`,
-				JSON.stringify({
-					title,
-					content,
-					updatedAt: timestamp
-				})
-			);
-
-			lastSavedContent = content;
 			lastSaveTime = timestamp;
 			hasUnsavedChanges = false;
 			setSaveStatus('saved');
 		} catch (error) {
-			console.error('Error saving to storage:', error);
+			console.error('Error saving document metadata:', error);
 			setSaveStatus('error');
 		}
 	}
 
-	// Load content from documents store and localStorage
+	// Initial content and metadata loading
 	function loadContent() {
-		try {
-			// Special handling for default-document (legacy format)
-			if (storyId === 'default-document') {
-				const legacyContent = localStorage.getItem('document_content');
-				const legacyTitle = localStorage.getItem('document_title');
-
-				if (legacyContent) {
-					if (editor) {
-						editor.innerHTML = legacyContent;
-						documentTitle.set(legacyTitle || 'Untitled Document');
-						updateCounts();
-
-						// Save in new format
-						saveToLocalStorage();
-					}
-					isLoading = false;
-					loadSettings();
-					return;
-				}
-			}
-
-			// First try to get from documents store
-			const docsData = get(documents);
-			if (docsData[storyId]) {
-				if (editor) {
-					editor.innerHTML = docsData[storyId].content;
-					documentTitle.set(docsData[storyId].title);
-					updateCounts();
-				}
-			} else {
-				// Try localStorage as fallback
-				const doc = JSON.parse(localStorage.getItem(`document_${storyId}`) || '{}');
-
-				if (doc.content) {
-					if (editor) {
-						editor.innerHTML = doc.content;
-						documentTitle.set(doc.title || 'Untitled Document');
-						updateCounts();
-					}
-				} else {
-					// Initialize new document
-					if (editor) {
-						editor.innerHTML = '';
-						documentTitle.set('Untitled Document');
-						updateCounts();
-						saveToLocalStorage(); // Save the initial state
-					}
-				}
-			}
-
-			isLoading = false;
-			loadSettings();
-		} catch (error) {
-			console.error('Error loading document:', error);
-			isLoading = false;
+		// Only load document metadata (title)
+		const docsData = get(documents);
+		if (docsData[storyId]) {
+			documentTitle.set(docsData[storyId].title || 'Untitled Document');
+		} else {
+			documentTitle.set('Untitled Document');
+			saveDocumentMetadata(); // Initialize document
 		}
+
+		isLoading = false;
+		loadSettings();
 	}
 
+	// Handle editor input
 	function handleInput() {
 		updateCounts();
 		hasUnsavedChanges = true;
 
-		// Save immediately to storage
-		saveToLocalStorage();
+		// Notify chapters component of content change
+		if (currentChapterId) {
+			window.dispatchEvent(
+				new CustomEvent('editor:content-change', {
+					detail: {
+						content: editor?.innerHTML || '',
+						chapterId: currentChapterId
+					}
+				})
+			);
+		}
 	}
 
+	// Update save status display
 	function setSaveStatus(status: typeof saveStatus) {
 		saveStatus = status;
 
-		// Clear any existing timeout
 		if (statusHideTimeout) {
 			clearTimeout(statusHideTimeout);
 		}
 
-		// Set timeout to hide the message after a few seconds
 		if (status === 'saved' || status === 'error') {
 			statusHideTimeout = setTimeout(() => {
 				saveStatus = 'hidden';
 			}, 2000);
 		}
 
-		// Dispatch custom event to notify layout of status change
 		if (typeof window !== 'undefined') {
 			window.dispatchEvent(new CustomEvent('document:save-status', { detail: status }));
 		}
 	}
+
+	onMount(() => {
+		// Initialize online status
+		updateOnlineStatus();
+
+		// Set up event listeners
+		window.addEventListener('online', updateOnlineStatus);
+		window.addEventListener('offline', updateOnlineStatus);
+		window.addEventListener('document:title-change', handleTitleChange);
+
+		// Subscribe to documents store for title sync
+		unsubscribe = documents.subscribe((docs) => {
+			if (docs[storyId]) {
+				const title = docs[storyId].title;
+				if (title !== undefined && title !== null) {
+					documentTitle.set(title);
+				}
+			}
+		});
+
+		// Load document metadata
+		loadContent();
+
+		// Listen for chapter content changes
+		window.addEventListener('chapter:content-change', ((event: ChapterContentEvent) => {
+			if (editor) {
+				currentChapterId = event.detail.chapterId;
+				editor.innerHTML = event.detail.content || '';
+				updateCounts();
+				console.log(`Editor updated with content from chapter ID: ${currentChapterId}`);
+			}
+		}) as EventListener);
+
+		return () => {
+			window.removeEventListener('online', updateOnlineStatus);
+			window.removeEventListener('offline', updateOnlineStatus);
+			window.removeEventListener('document:title-change', handleTitleChange);
+			window.removeEventListener('chapter:content-change', (() => {}) as EventListener);
+			if (unsubscribe) unsubscribe();
+		};
+	});
 </script>
 
 <div class="editor-container">

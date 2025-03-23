@@ -3,6 +3,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import Editor from '$lib/components/Editor.svelte';
+	import Chapters from '$lib/components/Chapters.svelte';
 	import { documents } from '$lib/stores/documents';
 
 	let leftPanelVisible = true;
@@ -55,7 +56,7 @@
 
 <div class="layout-container">
 	<aside class="panel left-panel" class:collapsed={!leftPanelVisible}>
-		<h2>Plot Lines</h2>
+		<h2>Chapters</h2>
 		<button class="toggle-button" on:click={toggleLeftPanel}>
 			<span class:rotated={!leftPanelVisible}>
 				<svg
@@ -74,7 +75,9 @@
 			</span>
 		</button>
 		<div class="panel-content" class:hidden={!leftPanelVisible}>
-			<!-- Plot lines content will go here -->
+			{#if storyId}
+				<Chapters {storyId} />
+			{/if}
 		</div>
 	</aside>
 
