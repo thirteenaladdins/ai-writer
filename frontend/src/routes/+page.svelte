@@ -2,45 +2,72 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
-	import Editor from '$lib/components/Editor.svelte';
-	import Chapters from '$lib/components/Chapters.svelte';
+	import DocumentEditor from '$lib/components/document-editor.svelte';
+	import ChapterList from '$lib/components/chapter-list.svelte';
+	import EditorToolbar from '$lib/components/editor-toolbar.svelte';
 	import { documents } from '$lib/stores/documents';
+	import { browser } from '$app/environment';
+	import { get } from 'svelte/store';
 
 	let leftPanelVisible = true;
 	let rightPanelVisible = true;
 	let storyId: string | null = null;
 	let isLoading = true;
 
-	onMount(() => {
-		// Check if we have the legacy document format
-		const legacyContent = localStorage.getItem('document_content');
+	// Editor state that needs to be lifted up
+	let wordCount = 0;
+	let charCount = 0;
+	let saveStatus: 'saved' | 'saving' | 'error' | 'offline' | 'hidden' = 'saved';
+	const fonts = ['Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana'];
+	const fontSizes = ['9pt', '10pt', '11pt', '12pt', '14pt', '16pt'];
+	let selectedFont = 'Arial';
+	let selectedSize = '11pt';
 
-		if (legacyContent) {
-			console.log('Legacy document format detected');
-			// If we're at root with no ID, use default-document
-			if (!storyId) {
-				console.log('Setting default-document as current story');
-				storyId = 'default-document';
-				// Update URL without causing navigation
-				const url = new URL(window.location.href);
-				url.searchParams.set('id', storyId);
-				window.history.replaceState({}, '', url.toString());
+	// Load editor settings
+	function loadSettings(id: string) {
+		if (!browser) return;
+
+		try {
+			const settings = localStorage.getItem(`document_settings_${id}`);
+			if (settings) {
+				const parsed = JSON.parse(settings);
+				selectedFont = parsed.font;
+				selectedSize = parsed.fontSize;
 			}
+		} catch (err) {
+			console.error('Error loading settings:', err);
 		}
+	}
 
-		documents.loadFromStorage();
-		isLoading = false;
+	onMount(async () => {
+		try {
+			await documents.loadFromStorage();
+		} catch (err) {
+			console.error('Error loading documents:', err);
+		} finally {
+			isLoading = false;
+		}
 	});
+
+	let documentLoaded = false;
 
 	$: {
 		// Get story ID from URL
 		const urlParams = new URLSearchParams($page.url.search);
 		const idFromUrl = urlParams.get('id');
 
-		if (idFromUrl) {
-			storyId = idFromUrl;
-		} else if (!isLoading) {
-			// Only redirect if we're not in loading state
+		if (idFromUrl && !isLoading) {
+			const docs = get(documents);
+			if (docs[idFromUrl]) {
+				storyId = idFromUrl;
+				loadSettings(idFromUrl);
+				documentLoaded = true;
+			} else if (!documentLoaded) {
+				// Only redirect if document doesn't exist and we haven't loaded a document yet
+				goto('/home');
+			}
+		} else if (!isLoading && !documentLoaded) {
+			// Only redirect if we're not in loading state and haven't loaded a document
 			goto('/home');
 		}
 	}
@@ -52,196 +79,99 @@
 	function toggleRightPanel() {
 		rightPanelVisible = !rightPanelVisible;
 	}
+
+	// Event handlers for toolbar
+	function handleFontChange(event: CustomEvent<string>) {
+		selectedFont = event.detail;
+	}
+
+	function handleSizeChange(event: CustomEvent<string>) {
+		selectedSize = event.detail;
+	}
+
+	// Event handlers for editor state updates
+	function handleEditorStateUpdate(
+		event: CustomEvent<{
+			wordCount: number;
+			charCount: number;
+			saveStatus: typeof saveStatus;
+		}>
+	) {
+		wordCount = event.detail.wordCount;
+		charCount = event.detail.charCount;
+		saveStatus = event.detail.saveStatus;
+	}
 </script>
 
-<div class="layout-container">
-	<aside class="panel left-panel" class:collapsed={!leftPanelVisible}>
-		<h2>Chapters</h2>
-		<button class="toggle-button" on:click={toggleLeftPanel}>
-			<span class:rotated={!leftPanelVisible}>
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-				>
-					<polyline points="11 17 6 12 11 7" />
-					<polyline points="18 17 13 12 18 7" />
-				</svg>
-			</span>
-		</button>
-		<div class="panel-content" class:hidden={!leftPanelVisible}>
-			{#if storyId}
-				<Chapters {storyId} />
-			{/if}
-		</div>
-	</aside>
-
-	<main class="panel main-panel">
-		{#if storyId}
-			<Editor {storyId} />
-		{:else}
-			<div class="loading">Loading...</div>
+{#if storyId}
+	<div class="editor-layout">
+		{#if leftPanelVisible}
+			<aside class="left-panel">
+				<ChapterList {storyId} />
+			</aside>
 		{/if}
-	</main>
-
-	<aside class="panel right-panel" class:collapsed={!rightPanelVisible}>
-		<h2>AI Assistant</h2>
-		<button class="toggle-button" on:click={toggleRightPanel}>
-			<span class:rotated={!rightPanelVisible}>
-				<svg
-					width="16"
-					height="16"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-				>
-					<polyline points="13 17 18 12 13 7" />
-					<polyline points="6 17 11 12 6 7" />
-				</svg>
-			</span>
-		</button>
-		<div class="panel-content" class:hidden={!rightPanelVisible}>
-			<!-- AI chat interface will go here -->
+		<div class="main-content">
+			<EditorToolbar
+				{selectedFont}
+				{selectedSize}
+				{saveStatus}
+				{wordCount}
+				{charCount}
+				{fonts}
+				{fontSizes}
+				on:fontChange={handleFontChange}
+				on:sizeChange={handleSizeChange}
+			/>
+			<DocumentEditor
+				{storyId}
+				{selectedFont}
+				{selectedSize}
+				on:stateUpdate={handleEditorStateUpdate}
+			/>
 		</div>
-	</aside>
-</div>
+		{#if rightPanelVisible}
+			<aside class="right-panel">
+				<!-- Future panel content -->
+			</aside>
+		{/if}
+	</div>
+{/if}
 
 <style>
-	.layout-container {
+	.editor-layout {
 		display: flex;
-		width: 100%;
 		height: 100%;
-		position: relative;
+		overflow: hidden;
+		width: 100%;
 	}
 
-	.panel {
-		position: relative;
-		transition: all 0.3s ease;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.panel h2 {
-		margin: 0;
-		padding: 1rem;
-		font-size: 0.9rem;
-		font-weight: 500;
-		color: #cccccc;
-		border-bottom: 1px solid var(--border-color);
-		position: relative;
-	}
-
-	.left-panel {
+	.left-panel,
+	.right-panel {
 		width: 250px;
+		background: var(--panel-background);
 		border-right: 1px solid var(--border-color);
-		margin-right: -14px;
+		overflow-y: auto;
+		flex-shrink: 0;
 	}
 
 	.right-panel {
-		width: 300px;
+		border-right: none;
 		border-left: 1px solid var(--border-color);
-		margin-left: -14px;
 	}
 
-	.main-panel {
+	.main-content {
 		flex: 1;
-		min-width: 0;
-		z-index: 1;
-		padding: 0;
 		overflow: hidden;
-	}
-
-	.panel.collapsed {
-		width: 32px;
-	}
-
-	.panel.collapsed h2 {
-		display: none;
-	}
-
-	.toggle-button {
-		position: absolute;
-		top: calc(1rem + 0.9rem + 4px); /* Align with the bottom of h2 */
-		width: 28px;
-		height: 28px;
-		background: var(--panel-background);
-		border: 1px solid var(--border-color);
-		border-radius: 50%;
-		cursor: pointer;
 		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0;
-		color: var(--text-color);
-		opacity: 0.8;
-		transition: all 0.2s ease;
-		z-index: 20;
-		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-		transform: translateY(-50%);
+		flex-direction: column;
+		background: var(--editor-background);
+		min-width: 0;
 	}
 
-	.toggle-button span {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 16px;
-		height: 16px;
-	}
-
-	.toggle-button svg {
-		width: 16px;
-		height: 16px;
-		display: block;
-	}
-
-	.left-panel .toggle-button {
-		right: 0;
-	}
-
-	.right-panel .toggle-button {
-		left: 0;
-	}
-
-	.toggle-button:hover {
-		opacity: 1;
-		background: var(--hover-color);
-		box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-		transform: translateY(-50%) scale(1.05);
-	}
-
-	.rotated {
-		transform: rotate(180deg);
-		display: flex;
-	}
-
-	.panel-content {
-		opacity: 1;
-		transition: opacity 0.2s ease;
-		height: 100%;
-		overflow-y: auto;
-		padding: 1rem;
-	}
-
-	.panel-content.hidden {
-		opacity: 0;
-		pointer-events: none;
-		padding: 0;
-	}
-
-	.loading {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		height: 100%;
-		color: var(--text-muted);
-		font-size: 1.2rem;
+	@media (max-width: 768px) {
+		.left-panel,
+		.right-panel {
+			width: 200px;
+		}
 	}
 </style>
