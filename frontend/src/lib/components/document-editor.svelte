@@ -10,6 +10,7 @@
 	export let storyId: string;
 	export let selectedFont: string;
 	export let selectedSize: string;
+	export let aiText: string | null = null;
 
 	// State
 	let isLoading = true;
@@ -171,6 +172,19 @@
 		}
 	}, 1000);
 
+	// Immediate save function
+	async function saveImmediately() {
+		if (!browser || !storyId || !currentChapterId) return;
+
+		try {
+			await documents.saveChapter(storyId, currentChapterId, editor?.innerHTML || '');
+			lastSaveTime = new Date().toISOString();
+			hasUnsavedChanges = false;
+		} catch (err) {
+			console.error('Error saving document:', err);
+		}
+	}
+
 	// Save editor settings
 	function saveSettings() {
 		if (!browser) return;
@@ -212,6 +226,39 @@
 		debouncedSave();
 	}
 
+	// Handle editor blur
+	function handleBlur() {
+		if (hasUnsavedChanges) {
+			saveImmediately();
+		}
+	}
+
+	// Handle before unload
+	function handleBeforeUnload(event: BeforeUnloadEvent) {
+		if (hasUnsavedChanges) {
+			event.preventDefault();
+			event.returnValue = '';
+		}
+	}
+
+	// Handle keyboard events
+	function handleKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			const selection = window.getSelection();
+			if (selection && selection.rangeCount > 0) {
+				const range = selection.getRangeAt(0);
+				const br = document.createElement('br');
+				range.insertNode(br);
+				range.setStartAfter(br);
+				range.setEndAfter(br);
+				selection.removeAllRanges();
+				selection.addRange(range);
+				handleInput();
+			}
+		}
+	}
+
 	// Update save status display
 	function setSaveStatus(status: typeof saveStatus) {
 		saveStatus = status;
@@ -248,6 +295,60 @@
 		saveSettings();
 	}
 
+	// Watch for AI text changes
+	$: if (aiText) {
+		console.log('AI text received via prop:', aiText);
+		insertAIText(aiText);
+		aiText = null; // Reset after insertion
+	}
+
+	// Function to insert AI-generated text
+	function insertAIText(text: string) {
+		if (!editor) {
+			console.error('Editor element not found');
+			return;
+		}
+
+		console.log('Attempting to insert AI text, length:', text.length);
+
+		// Get selection to insert at cursor position
+		const selection = window.getSelection();
+		if (selection && selection.rangeCount > 0) {
+			const range = selection.getRangeAt(0);
+			if (
+				range.commonAncestorContainer === editor ||
+				editor.contains(range.commonAncestorContainer)
+			) {
+				console.log('Inserting text at cursor position');
+				// Create a text node with the AI content
+				const textNode = document.createTextNode(text);
+
+				// Delete any selected text and insert the new content
+				range.deleteContents();
+				range.insertNode(textNode);
+
+				// Move cursor to end of inserted text
+				range.setStartAfter(textNode);
+				range.setEndAfter(textNode);
+				selection.removeAllRanges();
+				selection.addRange(range);
+
+				// Trigger save and update counts
+				handleInput();
+			} else {
+				console.log('Cursor not in editor, appending to end');
+				// If cursor is not in editor, append to the end
+				editor.innerHTML += text;
+				handleInput();
+			}
+		} else {
+			console.log('No selection found, appending to end');
+			// If no selection, append to the end
+			editor.innerHTML += text;
+			handleInput();
+		}
+	}
+
 	onMount(() => {
 		if (!browser) return;
 
@@ -258,6 +359,7 @@
 		// Set up event listeners
 		window.addEventListener('online', updateOnlineStatus);
 		window.addEventListener('offline', updateOnlineStatus);
+		window.addEventListener('beforeunload', handleBeforeUnload);
 
 		// Listen for chapter selection
 		window.addEventListener('chapter:selected', ((event: CustomEvent) => {
@@ -266,7 +368,7 @@
 			// Save current content before switching if there are unsaved changes
 			if (hasUnsavedChanges && currentChapterId) {
 				// Save synchronously to ensure content is saved before switching
-				documents.saveChapter(storyId, currentChapterId, editor?.innerHTML || '');
+				saveImmediately();
 			}
 
 			// Update current chapter and load its content
@@ -293,11 +395,12 @@
 			// Save any unsaved changes before unmounting
 			if (hasUnsavedChanges && currentChapterId) {
 				// Save synchronously on unmount
-				documents.saveChapter(storyId, currentChapterId, editor?.innerHTML || '');
+				saveImmediately();
 			}
 			if (unsubscribe) unsubscribe();
 			window.removeEventListener('online', updateOnlineStatus);
 			window.removeEventListener('offline', updateOnlineStatus);
+			window.removeEventListener('beforeunload', handleBeforeUnload);
 			window.removeEventListener('chapter:selected', (() => {}) as EventListener);
 			if (statusHideTimeout) clearTimeout(statusHideTimeout);
 			debouncedSave.cancel();
@@ -311,6 +414,8 @@
 		bind:this={editor}
 		contenteditable="true"
 		on:input={handleInput}
+		on:blur={handleBlur}
+		on:keydown={handleKeydown}
 		style="font-family: {selectedFont}; font-size: {selectedSize};"
 		role="textbox"
 		aria-multiline="true"
@@ -324,7 +429,7 @@
 		flex-direction: column;
 		height: 100%;
 		background: var(--editor-background);
-		width: 100%;
+		width: 85%;
 	}
 
 	.editor {
@@ -336,6 +441,8 @@
 		color: var(--text-color);
 		background: var(--editor-background);
 		width: 100%;
+		white-space: pre-wrap;
+		word-wrap: break-word;
 	}
 
 	.editor:focus {

@@ -8,6 +8,8 @@
 	import { documents } from '$lib/stores/documents';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
+	import KeyboardShortcuts from '$lib/components/keyboard-shortcuts.svelte';
+	import AIDialog from '$lib/components/ai-dialog.svelte';
 
 	let leftPanelVisible = true;
 	let rightPanelVisible = true;
@@ -22,6 +24,7 @@
 	const fontSizes = ['9pt', '10pt', '11pt', '12pt', '14pt', '16pt'];
 	let selectedFont = 'Arial';
 	let selectedSize = '11pt';
+	let aiText: string | null = null;
 
 	// Load editor settings
 	function loadSettings(id: string) {
@@ -101,7 +104,19 @@
 		charCount = event.detail.charCount;
 		saveStatus = event.detail.saveStatus;
 	}
+
+	// Handle AI generated text
+	function handleAITextGenerated(event: CustomEvent<{ text: string }>) {
+		console.log('Page component received textGenerated event:', event.detail);
+		aiText = event.detail.text;
+	}
 </script>
+
+<!-- Add the keyboard shortcuts component -->
+<KeyboardShortcuts />
+
+<!-- Add the AI dialog component -->
+<AIDialog on:textGenerated={handleAITextGenerated} />
 
 {#if storyId}
 	<div class="editor-layout">
@@ -126,6 +141,7 @@
 				{storyId}
 				{selectedFont}
 				{selectedSize}
+				{aiText}
 				on:stateUpdate={handleEditorStateUpdate}
 			/>
 		</div>
