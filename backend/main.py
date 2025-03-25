@@ -1,11 +1,17 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import json
 from datetime import datetime
 from sqlalchemy.orm import Session
 from models import SessionLocal, Document
+import ai_service  # Import the AI service module
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -103,6 +109,33 @@ async def get_plotlines():
 async def create_plotline(plotline: Plotline):
     plotlines[plotline.id] = plotline
     return plotline
+
+
+# AI endpoints
+@app.post("/api/ai/generate", response_model=Dict[str, Any])
+async def generate_ai_text(request: Dict[str, str]):
+    """
+    Generate text using AI based on a prompt
+    """
+    prompt = request.get("prompt", "")
+    logger.info(f"Received AI generation request with prompt: {prompt}")
+
+    if not prompt:
+        logger.warning("Empty prompt received")
+        return {"success": False, "error": "Prompt is required"}
+
+    try:
+        result = await ai_service.generate_text(prompt)
+        logger.info(f"AI generation result: {result.get('success')}")
+        if result.get('success'):
+            logger.info(
+                f"Generated text length: {len(result.get('text', ''))}")
+        else:
+            logger.error(f"AI generation failed: {result.get('error')}")
+        return result
+    except Exception as e:
+        logger.error(f"Error in generate_ai_text endpoint: {str(e)}")
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
