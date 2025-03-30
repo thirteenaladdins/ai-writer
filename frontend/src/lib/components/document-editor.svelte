@@ -6,6 +6,7 @@
 	import { debounce } from 'lodash-es';
 	import type { Chapter } from '$lib/stores/documents';
 	import { get } from 'svelte/store';
+	import InlineAiPrompt from './inline-ai-prompt.svelte';
 
 	export let storyId: string;
 	export let selectedFont: string;
@@ -27,6 +28,9 @@
 	let isOffline = false;
 	let hasUnsavedChanges = false;
 	let statusHideTimeout: ReturnType<typeof setTimeout>;
+
+	let showInlinePrompt = false;
+	let promptPosition = { x: 0, y: 0, lineHeight: 0 };
 
 	const dispatch = createEventDispatcher<{
 		stateUpdate: {
@@ -241,8 +245,45 @@
 		}
 	}
 
+	function getCursorPosition(selection: Selection): { x: number; y: number; lineHeight: number } {
+		// Create a range to measure
+		const range = selection.getRangeAt(0).cloneRange();
+
+		// Get the computed line height from the editor
+		const computedStyle = window.getComputedStyle(editor);
+		const lineHeight = parseFloat(computedStyle.lineHeight);
+
+		// Create a temporary container for measurement
+		const container = document.createElement('div');
+		container.style.position = 'absolute';
+		container.style.visibility = 'hidden';
+		container.style.height = `${lineHeight * 2}px`; // Two lines height
+
+		// Insert at cursor position
+		range.insertNode(container);
+
+		// Get position relative to editor
+		const rect = container.getBoundingClientRect();
+		const editorRect = editor.getBoundingClientRect();
+
+		// Clean up
+		container.remove();
+
+		// Restore selection
+		selection.removeAllRanges();
+		selection.addRange(range);
+
+		return {
+			x: rect.left - editorRect.left + editor.scrollLeft,
+			y: rect.top - editorRect.top + editor.scrollTop,
+			lineHeight
+		};
+	}
+
 	// Handle keyboard events
 	function handleKeydown(event: KeyboardEvent) {
+		console.log('Keydown event:', event.key, event.metaKey, event.ctrlKey);
+
 		if (event.key === 'Enter') {
 			event.preventDefault();
 			const selection = window.getSelection();
@@ -256,6 +297,54 @@
 				selection.addRange(range);
 				handleInput();
 			}
+		} else if (event.key.toLowerCase() === 'l' && (event.metaKey || event.ctrlKey)) {
+			event.preventDefault();
+			const selection = window.getSelection();
+			if (selection && selection.rangeCount > 0) {
+				// Get cursor position and line height
+				const pos = getCursorPosition(selection);
+				promptPosition = {
+					x: pos.x,
+					y: pos.y,
+					lineHeight: pos.lineHeight
+				};
+
+				// Create space for the prompt
+				const range = selection.getRangeAt(0);
+				const spacer = document.createElement('div');
+				spacer.className = 'ai-prompt-spacer';
+				spacer.style.height = `${pos.lineHeight * 2}px`; // Two lines height
+				spacer.contentEditable = 'false';
+				range.insertNode(spacer);
+
+				showInlinePrompt = true;
+			}
+		}
+
+		// Remove placeholder when typing begins
+		const placeholders = editor?.querySelectorAll('.cmd-placeholder');
+		if (placeholders && placeholders.length > 0) {
+			console.log('Removing placeholders on keydown');
+			placeholders.forEach((p) => p.remove());
+		}
+	}
+
+	function handlePromptSubmit(event: CustomEvent<{ prompt: string }>) {
+		showInlinePrompt = false;
+		// Remove the spacer before inserting AI text
+		const spacer = editor.querySelector('.ai-prompt-spacer');
+		if (spacer) {
+			spacer.remove();
+		}
+		insertAIText(`[AI response to: ${event.detail.prompt}]`);
+	}
+
+	function handlePromptCancel() {
+		showInlinePrompt = false;
+		// Remove the spacer
+		const spacer = editor.querySelector('.ai-prompt-spacer');
+		if (spacer) {
+			spacer.remove();
 		}
 	}
 
@@ -349,6 +438,135 @@
 		}
 	}
 
+	function handleClick() {
+		if (!editor) return;
+
+		// Remove any existing placeholders.
+		const existingPlaceholders = editor.querySelectorAll('.cmd-placeholder');
+		existingPlaceholders.forEach((p) => p.remove());
+
+		const selection = window.getSelection();
+		if (!selection || selection.rangeCount === 0) return;
+
+		const range = selection.getRangeAt(0);
+		const node = range.startContainer;
+		console.log('Click node type:', node.nodeType, 'node name:', node.nodeName);
+
+		// Check if we're directly clicking on text
+		if (node.nodeType === Node.TEXT_NODE && node.textContent) {
+			console.log('Text node content:', JSON.stringify(node.textContent));
+
+			// Check if we're at the beginning of a line (after a newline or at offset 0)
+			const isAtLineStart =
+				range.startOffset === 0 ||
+				(range.startOffset > 0 && node.textContent.substring(0, range.startOffset).endsWith('\n'));
+
+			// Check if there's text after the cursor position on this line
+			// Remove leading newline characters before checking for non-whitespace text
+			const textAfterCursor = node.textContent.substring(range.startOffset).replace(/^\n+/, '');
+			const hasTextAfterCursor = textAfterCursor.trim() !== '';
+
+			console.log(
+				'Cursor position:',
+				range.startOffset,
+				'At line start:',
+				isAtLineStart,
+				'Has text after cursor:',
+				hasTextAfterCursor
+			);
+
+			// If we're in the middle of text, don't insert placeholder
+			if (node.textContent.trim() !== '' && !isAtLineStart) {
+				console.log('Clicked in the middle of text content, not inserting placeholder');
+				return;
+			}
+
+			// If we're at start of line but there's text after cursor, don't insert
+			if (isAtLineStart && hasTextAfterCursor) {
+				console.log('At start of line with text after cursor, not inserting placeholder');
+				return;
+			}
+
+			console.log('Text node check passed, continuing with line check');
+		}
+
+		// Create a range for the current line.
+		const lineRange = document.createRange();
+		let startNode = node;
+		let endNode = node;
+
+		// Find the previous <br> or the start of the editor.
+		while (startNode && startNode !== editor) {
+			const prevSibling = startNode.previousSibling;
+			if ((prevSibling && prevSibling.nodeName === 'BR') || startNode === editor.firstChild) {
+				break;
+			}
+			startNode = prevSibling || startNode.parentNode || startNode;
+		}
+
+		// Find the next <br> or the end of the editor.
+		while (endNode && endNode !== editor) {
+			const nextSibling = endNode.nextSibling;
+			if ((nextSibling && nextSibling.nodeName === 'BR') || endNode === editor.lastChild) {
+				break;
+			}
+			endNode = nextSibling || endNode.parentNode || endNode;
+		}
+
+		// Determine the boundaries of the current line.
+		const startPoint =
+			startNode.previousSibling && startNode.previousSibling.nodeName === 'BR'
+				? startNode.previousSibling
+				: editor;
+		const endPoint =
+			endNode.nextSibling && endNode.nextSibling.nodeName === 'BR'
+				? endNode.nextSibling
+				: editor.lastChild || editor;
+
+		// Set the range from just after the previous <br> (or start of editor)
+		// to just before the next <br> (or end of editor) to get the current line text.
+		let lineText = '';
+		if (startPoint && endPoint) {
+			lineRange.setStartAfter(startPoint);
+			lineRange.setEndBefore(endPoint);
+			lineText = lineRange.toString().trim();
+			console.log('Current line text:', lineText);
+		}
+
+		// If the line contains any non-whitespace text, do not insert the placeholder.
+		if (lineText !== '') {
+			return;
+		}
+
+		// Otherwise, insert the placeholder span at the caret position.
+		try {
+			const placeholder = document.createElement('span');
+			placeholder.className = 'cmd-placeholder';
+			placeholder.textContent = '⌘K to generate';
+			placeholder.style.color = '#999';
+			placeholder.style.opacity = '0.5';
+			placeholder.style.background = 'transparent';
+			placeholder.style.textDecoration = 'none';
+			placeholder.style.border = 'none';
+			placeholder.style.outline = 'none';
+			// Make the placeholder non-editable.
+			placeholder.contentEditable = 'false';
+
+			// Insert the placeholder.
+			range.insertNode(placeholder);
+
+			// Move the caret just after the inserted placeholder.
+			range.setStartAfter(placeholder);
+			range.setEndAfter(placeholder);
+			selection.removeAllRanges();
+			selection.addRange(range);
+
+			editor.classList.add('hide-caret');
+		} catch (err) {
+			console.error('Error inserting placeholder:', err);
+		}
+	}
+
 	onMount(() => {
 		if (!browser) return;
 
@@ -416,11 +634,29 @@
 		on:input={handleInput}
 		on:blur={handleBlur}
 		on:keydown={handleKeydown}
+		on:click={handleClick}
+		on:mouseup={handleClick}
 		style="font-family: {selectedFont}; font-size: {selectedSize};"
 		role="textbox"
+		tabindex="0"
 		aria-multiline="true"
 		aria-label="Document content"
+		data-placeholder="⌘K to generate"
 	></div>
+
+	{#if showInlinePrompt}
+		<div
+			class="prompt-overlay"
+			style="
+				left: {promptPosition.x}px; 
+				top: {promptPosition.y}px;
+				font-family: {selectedFont};
+				font-size: {selectedSize};
+			"
+		>
+			<InlineAiPrompt on:submit={handlePromptSubmit} on:cancel={handlePromptCancel} />
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -430,6 +666,7 @@
 		height: 100%;
 		background: var(--editor-background);
 		width: 85%;
+		position: relative;
 	}
 
 	.editor {
@@ -447,5 +684,46 @@
 
 	.editor:focus {
 		background: var(--editor-focus-background);
+	}
+
+	.ai-prompt-spacer {
+		display: block;
+		margin: 0;
+		padding: 0;
+		border: none;
+		background: transparent;
+		pointer-events: none;
+	}
+
+	.prompt-overlay {
+		position: absolute;
+		z-index: 1000;
+		background: transparent;
+		font-size: inherit;
+		line-height: inherit;
+		color: inherit;
+		width: calc(100% - 4rem); /* Account for editor padding */
+	}
+
+	/* Target elements with the show-placeholder class */
+	.editor .show-placeholder:empty::before,
+	.editor .show-placeholder:has(br:only-child)::before {
+		content: '⌘K to generate';
+		color: var(--text-muted, #666);
+		opacity: 0.5;
+		font-style: italic;
+		pointer-events: none;
+	}
+
+	.cmd-placeholder {
+		color: var(--text-muted, #999);
+		opacity: 0.6;
+		font-style: italic;
+		user-select: none;
+		pointer-events: none;
+	}
+
+	.hide-caret {
+		caret-color: transparent;
 	}
 </style>
