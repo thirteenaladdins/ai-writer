@@ -99,7 +99,6 @@ body {
     height: calc(100% - 2.5rem); /* Subtract header height */
     display: flex;
     flex-direction: column;
-    margin: 0 var(--editor-margin);
 }
 
 .editor-content {
