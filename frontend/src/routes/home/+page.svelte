@@ -34,6 +34,10 @@
 		goto(`/?id=${id}`);
 	}
 
+	function goToFoldersTest() {
+		goto('/folders-test');
+	}
+
 	async function deleteDocument(id: string) {
 		const confirmed = window.confirm('Are you sure you want to delete this document?');
 		if (!confirmed) return;
@@ -77,6 +81,11 @@
 <div class="home-container">
 	<HomeHeader on:createDocument={createNewDocument} />
 
+	<div class="test-routes">
+		<a href="/tiptap-test" class="test-link">TipTap Test</a>
+		<a href="/folders-test" class="test-link">Folders Structure Test</a>
+	</div>
+
 	{#if isLoading}
 		<div class="loading">Loading documents...</div>
 	{:else if error}
@@ -103,6 +112,28 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+	}
+
+	.test-routes {
+		display: flex;
+		gap: 1rem;
+		padding: 1rem 2rem;
+		background: var(--panel-background);
+		border-bottom: 1px solid var(--border-color);
+	}
+
+	.test-link {
+		padding: 0.4rem 0.8rem;
+		background: var(--primary-color);
+		color: white;
+		text-decoration: none;
+		border-radius: 4px;
+		font-size: 0.9rem;
+		transition: background 0.2s;
+	}
+
+	.test-link:hover {
+		background: var(--primary-color-dark);
 	}
 
 	.documents-grid {

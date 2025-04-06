@@ -3,14 +3,14 @@
 	import { Editor } from '@tiptap/core';
 	import StarterKit from '@tiptap/starter-kit';
 	import CharacterCount from '@tiptap/extension-character-count';
-	import { editorState } from '../stores/editor-state';
+	import { editorState } from '../../stores/new/editor-state';
 	import { documents } from '$lib/stores/documents';
 	import { get } from 'svelte/store';
 	import { debounce } from 'lodash-es';
-	import TiptapToolbar from './tiptap-toolbar.svelte';
-	import TiptapChapters from './tiptap-chapters.svelte';
+	import TiptapToolbar from '../tiptap-toolbar.svelte';
+	import TiptapFolders from './tiptap-folders.svelte';
 	import { writable } from 'svelte/store';
-	import { ChapterExtension, chapterStore } from '../extensions/ChapterExtension';
+	import { DocumentExtension, documentStore } from '../../extensions/new/DocumentExtension';
 
 	// Create a Svelte store for word and character counts
 	export const countStore = writable<{ words: number; characters: number }>({
@@ -32,7 +32,7 @@
 
 	let element: HTMLElement;
 	let editor: Editor | null = null;
-	let previousChapterState: string = '';
+	let previousDocumentState: string = '';
 
 	// Subscribe to count changes
 	countStore.subscribe(({ words, characters }) => {
@@ -40,17 +40,26 @@
 		charCount = characters;
 	});
 
-	// Subscribe to chapter changes
-	chapterStore.subscribe((state) => {
-		if (state.currentChapterId && !state.isUpdating && editor) {
-			const chapter = state.chapters.find((c) => c.id === state.currentChapterId);
-			if (chapter) {
-				if (editor.getHTML() !== (chapter.content || '')) {
-					editor.commands.setContent(chapter.content || '');
+	// Subscribe to document changes
+	documentStore.subscribe((state) => {
+		if (state.currentDocumentId && !state.isUpdating && editor) {
+			const document = findDocumentById(state, state.currentDocumentId);
+			if (document) {
+				if (editor.getHTML() !== (document.content || '')) {
+					editor.commands.setContent(document.content || '');
 				}
 			}
 		}
 	});
+
+	// Function to find a document by ID across all folders
+	function findDocumentById(state: any, documentId: string) {
+		for (const folder of state.folders) {
+			const doc = folder.documents.find((d: any) => d.id === documentId);
+			if (doc) return doc;
+		}
+		return undefined;
+	}
 
 	// Function to update the word and character count
 	function updateCount() {
@@ -61,30 +70,54 @@
 		}
 	}
 
-	// Debounced save handler for chapter content updates
+	// Debounced save handler for document content updates
 	const saveToBackend = debounce(async () => {
 		if (!storyId || !editor) return;
 
 		try {
 			saveStatus = 'saving';
-			const currentState = get(chapterStore);
+			const currentState = get(documentStore);
 
-			if (!currentState.currentChapterId) {
-				console.warn('No chapter selected, cannot save');
+			if (!currentState.currentDocumentId) {
+				console.warn('No document selected, cannot save');
 				return;
 			}
 
-			const chapter = currentState.chapters.find((c) => c.id === currentState.currentChapterId);
-			if (!chapter) {
-				console.warn('Selected chapter not found in store');
+			let folderToUpdate = null;
+			let documentToUpdate = null;
+
+			// Find the current document and its folder
+			for (const folder of currentState.folders) {
+				const document = folder.documents.find((d) => d.id === currentState.currentDocumentId);
+				if (document) {
+					folderToUpdate = folder;
+					documentToUpdate = document;
+					break;
+				}
+			}
+
+			if (!folderToUpdate || !documentToUpdate) {
+				console.warn('Selected document not found in store');
 				return;
 			}
 
-			await documents.saveChapter(storyId, currentState.currentChapterId, chapter.content);
+			// Create updated folders with the changed document
+			const updatedFolders = currentState.folders.map((folder) =>
+				folder.id === folderToUpdate!.id
+					? {
+							...folder,
+							documents: folder.documents.map((doc) =>
+								doc.id === documentToUpdate!.id
+									? { ...doc, content: doc.content, updatedAt: new Date().toISOString() }
+									: doc
+							)
+						}
+					: folder
+			);
 
-			// Also save chapter list if needed (e.g., if titles changed)
+			// Then save to backend
 			await documents.saveDocument(storyId, {
-				chapters: currentState.chapters,
+				folders: updatedFolders,
 				updatedAt: new Date()
 			});
 
@@ -93,73 +126,63 @@
 				saveStatus = 'hidden';
 			}, 2000);
 		} catch (err) {
-			console.error('Error saving chapter:', err);
+			console.error('Error saving document:', err);
 			saveStatus = 'error';
 		}
 	}, 1000);
 
-	// A special subscriber that watches for content changes in the chapter store and saves to backend
+	// A special subscriber that watches for content changes in the document store and saves to backend
 	$: {
-		// Stringify chapters to detect actual changes
-		const serializedState = JSON.stringify($chapterStore.chapters);
+		// Stringify folders to detect actual changes
+		const serializedState = JSON.stringify($documentStore.folders);
 
 		// Only trigger save if there was a real change
-		if (previousChapterState && serializedState !== previousChapterState) {
+		if (previousDocumentState && serializedState !== previousDocumentState) {
 			saveToBackend();
 		}
 
 		// Update the previous state reference
-		previousChapterState = serializedState;
+		previousDocumentState = serializedState;
 	}
 
 	onMount(async () => {
-		// Initialize chapter store with documents data
+		// Initialize document store with documents data
 		const currentDocs = get(documents);
 		const doc = currentDocs[storyId];
-		if (doc) {
-			// Find the last edited chapter or use the first one
-			const savedChapterId = localStorage.getItem(`current_chapter_${storyId}`);
-			const lastChapter = doc.chapters.find((c) => c.id === savedChapterId) || doc.chapters[0];
 
-			// Initialize the chapter store
-			chapterStore.set({
-				currentChapterId: lastChapter?.id || null,
-				chapters: doc.chapters || [],
-				isUpdating: false
-			});
+		// If document exists but has no folders property, we'll handle that in tiptap-folders
+		// which will create the folder structure and migrate any chapters
 
-			// Set the initial state for comparison
-			previousChapterState = JSON.stringify(doc.chapters || []);
-
-			// Initialize the editor with the chapter content
-			editor = new Editor({
-				element,
-				extensions: [
-					StarterKit,
-					CharacterCount.configure({
-						// Use a more robust word counting algorithm
-						wordCounter: (text) => {
-							const wordRegex = /\S+/g;
-							return (text.match(wordRegex) || []).length;
-						}
-					}),
-					ChapterExtension
-				],
-				content: lastChapter?.content || '',
-				autofocus: true,
-				editable: true,
-				onUpdate: ({ editor }) => {
-					editor.commands.syncChapterContent();
-					updateCount();
-				}
-			});
-
-			// Initial count update
-			updateCount();
-
-			// Update editor state
-			editorState.setCurrentChapter(lastChapter?.id || null);
+		// Set the initial state for comparison (will be updated after migration if needed)
+		if (doc && doc.folders) {
+			previousDocumentState = JSON.stringify(doc.folders);
 		}
+
+		// Initialize the editor with the content
+		editor = new Editor({
+			element,
+			extensions: [
+				StarterKit,
+				CharacterCount.configure({
+					// Use a more robust word counting algorithm
+					wordCounter: (text) => {
+						const wordRegex = /\S+/g;
+						return (text.match(wordRegex) || []).length;
+					}
+				}),
+				DocumentExtension
+			],
+			content: '',
+			autofocus: true,
+			editable: true,
+			onUpdate: ({ editor }) => {
+				editor.commands.syncDocumentContent();
+				updateCount();
+			}
+		});
+
+		// Initial count update
+		updateCount();
 
 		// Load saved settings
 		if (typeof localStorage !== 'undefined') {
@@ -219,7 +242,7 @@
 
 <div class="editor-layout">
 	<aside class="left-panel">
-		<TiptapChapters {storyId} {editor} />
+		<TiptapFolders {storyId} {editor} />
 	</aside>
 	<div class="main-content">
 		<TiptapToolbar {editor} {saveStatus} {wordCount} {charCount} />
@@ -294,31 +317,5 @@
 		position: absolute;
 		left: 0;
 		top: 3px;
-	}
-
-	:global(.tiptap-editor .ProseMirror h1) {
-		font-size: 1.75em;
-		margin: 0.75em 0 0.25em;
-	}
-
-	:global(.tiptap-editor .ProseMirror h2) {
-		font-size: 1.5em;
-		margin: 0.75em 0 0.25em;
-	}
-
-	:global(.tiptap-editor .ProseMirror ul) {
-		padding-left: 1.5em;
-		margin: 0.5em 0;
-	}
-
-	:global(.tiptap-editor .ProseMirror ol) {
-		padding-left: 1.5em;
-		margin: 0.5em 0;
-	}
-
-	@media (max-width: 768px) {
-		.left-panel {
-			width: 200px;
-		}
 	}
 </style>

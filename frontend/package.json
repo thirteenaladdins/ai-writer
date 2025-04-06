@@ -34,10 +34,12 @@
 	},
 	"dependencies": {
 		"@tiptap/core": "^2.11.7",
+		"@tiptap/extension-character-count": "^2.11.7",
 		"@tiptap/starter-kit": "^2.11.7",
 		"@types/lodash-es": "^4.17.12",
 		"@types/uuid": "^10.0.0",
 		"lodash-es": "^4.17.21",
+		"nanoid": "^5.1.5",
 		"package.json": "^2.0.1",
 		"svelte-feather-icons": "^4.2.0",
 		"uuid": "^11.1.0"

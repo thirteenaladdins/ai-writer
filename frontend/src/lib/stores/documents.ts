@@ -12,7 +12,21 @@ export interface Document {
 	id: string;
 	title: string;
 	chapters: Chapter[];
+	folders?: Folder[];
 	updatedAt: Date;
+}
+
+export interface Folder {
+	id: string;
+	title: string;
+	documents: {
+		id: string;
+		title: string;
+		content: string;
+		jsonContent?: any;
+		createdAt: string;
+		updatedAt: string;
+	}[];
 }
 
 export interface DocumentsStore extends Writable<Record<string, Document>> {
@@ -69,6 +83,8 @@ function createDocumentsStore(): DocumentsStore {
 									order: 0
 								}
 							],
+							// Include folders if available
+							folders: Array.isArray(doc.folders) ? doc.folders : undefined,
 							updatedAt: new Date(doc.updatedAt || Date.now())
 						};
 						
@@ -89,6 +105,16 @@ function createDocumentsStore(): DocumentsStore {
 		},
 		saveDocument: async (id: string, document: Partial<Document>) => {
 			try {
+				console.log('saveDocument called:', {
+					id,
+					documentData: {
+						hasFolders: !!document.folders,
+						folderCount: document.folders ? document.folders.length : 0,
+						hasChapters: !!document.chapters,
+						chapterCount: document.chapters ? document.chapters.length : 0
+					}
+				});
+				
 				await update((docs) => {
 					const updatedDocs = { ...docs };
 					updatedDocs[id] = {
@@ -151,13 +177,27 @@ function createDocumentsStore(): DocumentsStore {
 
 async function saveToLocalStorage(id: string, doc: Partial<Document>): Promise<void> {
 	try {
+		const dataToSave = {
+			title: doc.title,
+			chapters: doc.chapters,
+			folders: doc.folders,
+			updatedAt: doc.updatedAt?.toISOString()
+		};
+		
+		console.log('Saving to localStorage:', {
+			id,
+			data: {
+				hasFolders: !!doc.folders,
+				folderCount: doc.folders ? doc.folders.length : 0,
+				hasChapters: !!doc.chapters,
+				chapterCount: doc.chapters ? doc.chapters.length : 0,
+				savedDataSize: JSON.stringify(dataToSave).length
+			}
+		});
+		
 		localStorage.setItem(
 			`document_${id}`,
-			JSON.stringify({
-				title: doc.title,
-				chapters: doc.chapters,
-				updatedAt: doc.updatedAt?.toISOString()
-			})
+			JSON.stringify(dataToSave)
 		);
 	} catch (error) {
 		console.error(`Failed to save document ${id} to localStorage:`, error);
